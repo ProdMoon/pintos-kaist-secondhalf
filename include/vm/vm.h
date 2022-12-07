@@ -2,13 +2,16 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
+#include <hash.h>
+#include "threads/mmu.h"
+#include "threads/synch.h"
 
 enum vm_type {
 	/* page not initialized */
 	VM_UNINIT = 0,
 	/* page not related to the file, aka anonymous page */
 	VM_ANON = 1,
-	/* page that realated to the file */
+	/* page that related to the file */
 	VM_FILE = 2,
 	/* page that hold the page cache, for project 4 */
 	VM_PAGE_CACHE = 3,
@@ -17,7 +20,7 @@ enum vm_type {
 
 	/* Auxillary bit flag marker for store information. You can add more
 	 * markers, until the value is fit in the int. */
-	VM_MARKER_0 = (1 << 3),
+	VM_MARKER_0 = (1 << 3),		/* Stack */
 	VM_MARKER_1 = (1 << 4),
 
 	/* DO NOT EXCEED THIS VALUE. */
@@ -35,6 +38,7 @@ struct page_operations;
 struct thread;
 
 #define VM_TYPE(type) ((type) & 7)
+#define VM_IS_STACK(type) ((type) & VM_MARKER_0)
 
 /* The representation of "page".
  * This is kind of "parent class", which has four "child class"es, which are
@@ -46,6 +50,7 @@ struct page {
 	struct frame *frame;   /* Back reference for frame */
 
 	/* Your implementation */
+	struct hash_elem hash_elem;
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -85,6 +90,8 @@ struct page_operations {
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
 struct supplemental_page_table {
+	struct hash pages;
+	struct lock spt_lock;
 };
 
 #include "threads/thread.h"
@@ -108,5 +115,8 @@ bool vm_alloc_page_with_initializer (enum vm_type type, void *upage,
 void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
+
+unsigned page_hash (const struct hash_elem *p_, void *aux UNUSED);
+bool page_less (const struct hash_elem *a_, const struct hash_elem *b_, void *aux UNUSED);
 
 #endif  /* VM_VM_H */

@@ -19,4 +19,11 @@ struct child {
 	struct semaphore sema;
 };
 
+struct aux {
+    struct file *file;
+    off_t ofs;
+    size_t page_read_bytes;
+    size_t page_zero_bytes;
+};
+
 #endif /* userprog/process.h */
