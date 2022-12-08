@@ -65,18 +65,21 @@ syscall_handler (struct intr_frame *f UNUSED) {
 
 /* This assertion should be used when
    the argument sent by user is POINTER TYPE */
-void assert_valid_address(void * uaddr) {
-	/* invalid if uaddr is null or kernel virtual address */
-	if (!uaddr || is_kernel_vaddr(uaddr)) {
+void assert_valid_address(void *uaddr) {
+	/* invalid if uaddr is null or kernel virtual address
+	   or unmapped to physical address */
+	if (!uaddr || is_kernel_vaddr(uaddr) ||
+		!pml4_get_page(thread_current()->pml4, uaddr)) {
+
+#ifdef VM
+	/* Try handle fault. */
+	if (vm_try_handle_fault (NULL, uaddr, NULL, NULL, NULL))
+		return;
+#endif
 		thread_current()->exit_code = -1;
 		thread_exit();
 	}
 
-	/* just check if uaddr is actually mapped to some physical address */
-	if (!pml4_get_page(thread_current()->pml4, uaddr)) {
-		thread_current()->exit_code = -1;
-		thread_exit();
-	}
 }
 
 struct child *find_child (struct list *child_list, int tid) {

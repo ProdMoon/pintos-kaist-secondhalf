@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "filesys/file.h"
 
 #ifdef VM
 #include "vm/vm.h"
@@ -117,7 +118,7 @@ struct thread {
 	char fd_count;
 
 	/* for deny on write on executables. */
-	uintptr_t running_executable;	// file struct address of executable file for this process
+	struct file *running_executable;	// file struct address of executable file for this process
 
 	/* parent-child relationship */
 	struct child *sorry_mama;			// struct child of this process

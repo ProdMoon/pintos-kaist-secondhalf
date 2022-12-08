@@ -179,16 +179,9 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 }
 #endif
 
-/* Duplicate the parent's open files to current.
- * Some of members should not be duplicated here (i.e. pml4, tf ...).
- * Note : I'm not sure that this code should have wrapped by `#ifndef VM`. */
+/* Duplicate the parent's open files to current. */
 static bool
 duplicate_open_files(struct thread *current, struct thread *parent) {
-
-#ifdef VM
-	/* Implement maybe AFTER Project 3 */
-	/* What's AFTER LIKE? */
-#else
 	/* Duplicate files in fd_table. */
 	int i;
 	for (i = 0; i < FD_MAX; i++) {
@@ -200,9 +193,6 @@ duplicate_open_files(struct thread *current, struct thread *parent) {
 
 	/* Duplicate running_executable file */
 	current->running_executable = file_duplicate(parent->running_executable);
-	
-#endif
-
 }
 
 
@@ -230,10 +220,20 @@ __do_fork (void **aux) {
 
 	process_activate (current);
 
+	/* 3. Duplicate thread. (with files) */
+	lock_acquire(&filesys_lock);
+	duplicate_open_files (current, parent);  //fd_table, running_executable
+	lock_release(&filesys_lock);
+
 #ifdef VM
 	supplemental_page_table_init (&current->spt);
-	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
+
+	lock_acquire (&thread_current()->spt.spt_lock);
+	if (!supplemental_page_table_copy (&current->spt, &parent->spt)) {
+		lock_release (&thread_current()->spt.spt_lock);
 		goto error;
+	}
+	lock_release (&thread_current()->spt.spt_lock);
 #else
 	if (!pml4_for_each (parent->pml4, duplicate_pte, parent))
 		goto error;
@@ -244,11 +244,6 @@ __do_fork (void **aux) {
 	 * TODO:       in include/filesys/file.h. Note that parent should not return
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
-	
-	/* 3. Duplicate thread. (with files) */
-	lock_acquire(&filesys_lock);
-	duplicate_open_files (current, parent);  //fd_table, running_executable
-	lock_release(&filesys_lock);
 
 	/* 4. set parent-child relationship */
 	struct child *child = malloc(sizeof(struct child));
@@ -262,7 +257,7 @@ __do_fork (void **aux) {
 								// 자식이(현재 스레드가) 부모 스레드의 커널 스택에 있는 정보들을
 								// 다 이용했기 때문에, 부모가 일어나서(wake up) fork handler 함수를
 								// 반환해도 괜찮다는 의미.
-	
+
 	/* Finally, switch to the newly created process. */
 	if_.R.rax = 0;	// child receives 0 for return of fork()
 	do_iret (&if_);
@@ -383,9 +378,9 @@ process_exit (void) {
 			file_close(curr->fd_table[fd]);
 		}
 		lock_release(&filesys_lock);
-	}
 
-	process_cleanup ();
+		process_cleanup ();
+	}
 }
 
 /* Free the current process's resources. */
@@ -400,7 +395,9 @@ process_cleanup (void) {
 	lock_release(&filesys_lock);
 
 #ifdef VM
+	lock_acquire (&thread_current()->spt.spt_lock);
 	supplemental_page_table_kill (&curr->spt);
+	lock_release (&thread_current()->spt.spt_lock);
 #endif
 
 	uint64_t *pml4;
@@ -825,15 +822,11 @@ lazy_load_segment (struct page *page, struct aux *aux) {
 	size_t page_read_bytes = aux->page_read_bytes;
 	size_t page_zero_bytes = aux->page_zero_bytes;
 
-	file_seek (file, ofs);
-
 	/* Load this page. */
-	if (file_read (file, page->va, page_read_bytes) != (int) page_read_bytes)
+	if (file_read_at (file, page->va, page_read_bytes, ofs) != (int) page_read_bytes)
 		return false;
 
 	memset (page->va + page_read_bytes, 0, page_zero_bytes);
-
-	free (aux);
 
 	return true;
 }
@@ -873,9 +866,13 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		aux->page_read_bytes = page_read_bytes;
 		aux->page_zero_bytes = page_zero_bytes;
 
+		lock_acquire (&thread_current()->spt.spt_lock);
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+					writable, lazy_load_segment, aux)) {
+			lock_release (&thread_current()->spt.spt_lock);
 			return false;
+		}
+		lock_release (&thread_current()->spt.spt_lock);
 
 		/* Advance. */
 		read_bytes -= page_read_bytes;
