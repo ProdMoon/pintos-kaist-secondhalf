@@ -65,16 +65,16 @@ syscall_handler (struct intr_frame *f UNUSED) {
 
 /* This assertion should be used when
    the argument sent by user is POINTER TYPE */
-void assert_valid_address(void *uaddr) {
+void assert_valid_address(struct intr_frame *f, void *uaddr) {
 	/* invalid if uaddr is null or kernel virtual address
 	   or unmapped to physical address */
 	if (!uaddr || is_kernel_vaddr(uaddr) ||
 		!pml4_get_page(thread_current()->pml4, uaddr)) {
 
 #ifdef VM
-	/* Try handle fault. */
-	if (vm_try_handle_fault (NULL, uaddr, NULL, NULL, NULL))
-		return;
+		/* Try handle fault. */
+		if (vm_try_handle_fault (f, uaddr, NULL, NULL, NULL))
+			return;
 #endif
 		thread_current()->exit_code = -1;
 		thread_exit();
@@ -138,7 +138,7 @@ void fork_syscall_handler (struct intr_frame *f) {
  * exec (const char *file)
  */
 void exec_syscall_handler (struct intr_frame *f) {
-	assert_valid_address(f->R.rdi);
+	assert_valid_address(f, f->R.rdi);
 
 	char *arg, *arg_copy;
 	arg = f->R.rdi;
@@ -171,7 +171,7 @@ void wait_syscall_handler (struct intr_frame *f) {
  * create (const char *file, unsigned initial_size)
  */
 void create_syscall_handler (struct intr_frame *f) {
-	assert_valid_address(f->R.rdi);
+	assert_valid_address(f, f->R.rdi);
 
 	char *name = f->R.rdi;
 	unsigned initial_size = f->R.rsi;
@@ -187,7 +187,7 @@ void create_syscall_handler (struct intr_frame *f) {
  * remove (const char *file)
  */
 void remove_syscall_handler (struct intr_frame *f) {
-	assert_valid_address(f->R.rdi);
+	assert_valid_address(f, f->R.rdi);
 	
 	char *name = f->R.rdi;
 	lock_acquire(&filesys_lock);
@@ -202,7 +202,7 @@ void remove_syscall_handler (struct intr_frame *f) {
  * open (const char *file)
  */
 void open_syscall_handler (struct intr_frame *f) {
-	assert_valid_address(f->R.rdi);
+	assert_valid_address(f, f->R.rdi);
 
 	char *file_name = f->R.rdi;
 	uintptr_t *fd_table = thread_current()->fd_table;
@@ -263,7 +263,7 @@ void filesize_syscall_handler (struct intr_frame *f) {
  * read (int fd, void *buffer, unsigned size)
  */
 void read_syscall_handler (struct intr_frame *f) {
-	assert_valid_address(f->R.rsi);
+	assert_valid_address(f, f->R.rsi);
 
 	int fd = f->R.rdi;
 	char *buffer = f->R.rsi;
@@ -296,7 +296,7 @@ void read_syscall_handler (struct intr_frame *f) {
  * write (int fd, const void *buffer, unsigned size)
  */
 void write_syscall_handler (struct intr_frame *f) {
-	assert_valid_address(f->R.rsi);
+	assert_valid_address(f, f->R.rsi);
 
 	int fd = f->R.rdi;
 	const void *buffer = f->R.rsi;

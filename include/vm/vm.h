@@ -37,8 +37,12 @@ enum vm_type {
 struct page_operations;
 struct thread;
 
+/* For TYPE check. */
 #define VM_TYPE(type) ((type) & 7)
 #define VM_IS_STACK(type) ((type) & VM_MARKER_0)
+
+/* The stack size should be limited to 1MB at maximum. */
+#define VM_STACKSIZE_LIMIT 0x47380000
 
 /* The representation of "page".
  * This is kind of "parent class", which has four "child class"es, which are

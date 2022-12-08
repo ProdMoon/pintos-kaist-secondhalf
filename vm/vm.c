@@ -152,6 +152,15 @@ vm_get_frame (void) {
 /* Growing the stack. */
 static void
 vm_stack_growth (void *addr UNUSED) {
+	struct supplemental_page_table *spt = &thread_current ()->spt;
+	void *va = pg_round_down (addr);
+
+	ASSERT (VM_STACKSIZE_LIMIT <= va);
+
+	while (spt_find_page (spt, va) == NULL) {
+		vm_alloc_page (VM_ANON | VM_MARKER_0, va, true);
+		va += PGSIZE;
+	}
 }
 
 /* Handle the fault on write_protected page */
@@ -165,8 +174,15 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
 	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
 	struct page *page;
-	/* TODO: Validate the fault */
-	/* TODO: Your code goes here */
+
+	/* Grow the stack if it's a valid stack growth case. */
+	void *rsp = f->rsp;
+	if (rsp-8 == addr) {
+		vm_stack_growth (addr);
+		return true;
+	}
+
+	/* Check the address entry's existance in the SPT. */
 	void *va = pg_round_down(addr);
 	if ((page = spt_find_page (spt, va)) == NULL)
 		return false;	/* Real Page Fault */
