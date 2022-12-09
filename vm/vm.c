@@ -177,7 +177,8 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 
 	/* Grow the stack if it's a valid stack growth case. */
 	void *rsp = f->rsp;
-	if (rsp-8 == addr) {
+	if (rsp-8 == addr ||
+		((rsp <= addr) && (VM_STACKSIZE_LIMIT <= addr) && (addr < USER_STACK))) {
 		vm_stack_growth (addr);
 		return true;
 	}
@@ -220,7 +221,7 @@ vm_do_claim_page (struct page *page) {
 	page->frame = frame;
 
 	/* TODO: Insert page table entry to map page's VA to frame's PA. */
-	pml4_set_page (thread_current()->pml4, page->va, frame->kva, true);
+	pml4_set_page (thread_current()->pml4, page->va, frame->kva, page->writable);
 
 	return swap_in (page, frame->kva);
 }

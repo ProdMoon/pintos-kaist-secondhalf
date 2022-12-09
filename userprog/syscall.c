@@ -65,9 +65,9 @@ syscall_handler (struct intr_frame *f UNUSED) {
 
 /* This assertion should be used when
    the argument sent by user is POINTER TYPE */
-void assert_valid_address(struct intr_frame *f, void *uaddr) {
-	/* invalid if uaddr is null or kernel virtual address
-	   or unmapped to physical address */
+void assert_valid_address (struct intr_frame *f, void *uaddr) {
+	/* If uaddr is null or in kernel pool or unmapped to physical address,
+	   it is invalid access. */
 	if (!uaddr || is_kernel_vaddr(uaddr) ||
 		!pml4_get_page(thread_current()->pml4, uaddr)) {
 
@@ -80,6 +80,16 @@ void assert_valid_address(struct intr_frame *f, void *uaddr) {
 		thread_exit();
 	}
 
+}
+
+/* Use this for checking whether the user tries to write on unwritable area. */
+void assert_write_on_unwritable (uintptr_t *addr) {
+	uintptr_t *va = pg_round_down (addr);
+	struct page *page = spt_find_page (&thread_current()->spt, va);
+	if (page->writable == false) {
+		thread_current()->exit_code = -1;
+		thread_exit();
+	}
 }
 
 struct child *find_child (struct list *child_list, int tid) {
@@ -264,6 +274,7 @@ void filesize_syscall_handler (struct intr_frame *f) {
  */
 void read_syscall_handler (struct intr_frame *f) {
 	assert_valid_address(f, f->R.rsi);
+	assert_write_on_unwritable (f->R.rsi);
 
 	int fd = f->R.rdi;
 	char *buffer = f->R.rsi;
@@ -297,6 +308,7 @@ void read_syscall_handler (struct intr_frame *f) {
  */
 void write_syscall_handler (struct intr_frame *f) {
 	assert_valid_address(f, f->R.rsi);
+	assert_write_on_unwritable (f->R.rsi);
 
 	int fd = f->R.rdi;
 	const void *buffer = f->R.rsi;

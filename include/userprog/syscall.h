@@ -10,6 +10,7 @@ struct lock filesys_lock;
 
 void syscall_init (void);
 void assert_valid_address(struct intr_frame *, void *);
+void assert_write_on_unwritable (uintptr_t *);
 struct child *find_child (struct list *child_list, int tid);
 
 void halt_syscall_handler (struct intr_frame *);
