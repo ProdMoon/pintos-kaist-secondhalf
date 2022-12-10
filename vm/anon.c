@@ -32,6 +32,12 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 	page->operations = &anon_ops;
 
 	struct anon_page *anon_page = &page->anon;
+	
+	/* Remember uninit page elements for page copy. */
+	anon_page->init = page->uninit.init;
+	anon_page->type = page->uninit.type;
+	anon_page->aux = page->uninit.aux;
+	anon_page->page_initializer = page->uninit.page_initializer;
 
 	return true;
 }
@@ -54,6 +60,6 @@ anon_destroy (struct page *page) {
 	struct anon_page *anon_page = &page->anon;
 	free (page->frame);
 	page->frame = NULL;
-	free (page->uninit.aux);
-	page->uninit.aux = NULL;
+	free (anon_page->aux);
+	anon_page->aux = NULL;
 }

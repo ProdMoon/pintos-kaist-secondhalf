@@ -204,6 +204,7 @@ bool
 vm_claim_page (void *va UNUSED) {
 	/* TODO: Fill this function */
 	struct page *page = calloc (1, sizeof(struct page));
+	page->va = va;
 
 	return vm_do_claim_page (page);
 }
@@ -285,12 +286,12 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 				if (vm_do_claim_page (dstp)) {
 					memcpy (dstp->frame->kva, srcp->frame->kva, PGSIZE);
 				} else {
-					printf("supplemental_page_table_copy: do_claim 실패.\n");
+					printf("supplemental_page_table_copy: vm_do_claim_page is failed.\n");
 					goto done;
 				}
 				break;
 			default:
-				printf("supplemental_page_table_copy: 잉? 페이지 타입이 이상해요.\n");
+				printf("supplemental_page_table_copy: Unexpected page type.\n");
 				goto done;
 		}
 	}

@@ -3,6 +3,7 @@
 
 #include "threads/thread.h"
 #include "threads/synch.h"
+#include "vm/vm.h"
 
 tid_t process_create_initd (const char *file_name);
 tid_t process_fork (const char *name, struct intr_frame *if_);
@@ -17,13 +18,6 @@ struct child {
     int exit_code;
 	struct list_elem elem;
 	struct semaphore sema;
-};
-
-struct aux {
-    struct file *file;
-    off_t ofs;
-    size_t page_read_bytes;
-    size_t page_zero_bytes;
 };
 
 #endif /* userprog/process.h */

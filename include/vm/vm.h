@@ -75,6 +75,14 @@ struct frame {
 	struct page *page;
 };
 
+/* Struct for auxiliary data. */
+struct aux {
+    struct file *file;
+    off_t ofs;
+    size_t page_read_bytes;
+    size_t page_zero_bytes;
+};
+
 /* The function table for page operations.
  * This is one way of implementing "interface" in C.
  * Put the table of "method" into the struct's member, and

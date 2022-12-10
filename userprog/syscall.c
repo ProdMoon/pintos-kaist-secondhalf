@@ -308,7 +308,6 @@ void read_syscall_handler (struct intr_frame *f) {
  */
 void write_syscall_handler (struct intr_frame *f) {
 	assert_valid_address(f, f->R.rsi);
-	assert_write_on_unwritable (f->R.rsi);
 
 	int fd = f->R.rdi;
 	const void *buffer = f->R.rsi;
@@ -321,6 +320,8 @@ void write_syscall_handler (struct intr_frame *f) {
 		written_bytes = size;
 	}
 	else {
+		assert_write_on_unwritable (buffer);
+
 		/* fd validity check */
 		if (fd < 2 || fd >= FD_MAX || fd_table[fd] == NULL) {
 			f->R.rax = -1;
@@ -410,6 +411,29 @@ void dup2_syscall_handler (struct intr_frame *f) {
  * mmap (void *addr, size_t length, int writable, int fd, off_t offset)
  */
 void mmap_syscall_handler (struct intr_frame *f) {
+	void *addr = f->R.rdi;
+	size_t length = f->R.rsi;
+	int writable = f->R.rdx;
+	int fd = f->R.r10;
+	off_t offset = f->R.r8;
+
+	uintptr_t *fd_table = thread_current()->fd_table;
+	struct supplemental_page_table *spt = &thread_current()->spt;
+
+	/* Check validity for mmap. */
+	if (fd < 2 || fd >= FD_MAX || fd_table[fd] == NULL
+		|| addr == NULL
+		|| addr != pg_round_down(addr)
+		|| length <= 0
+		|| file_length (fd_table[fd]) <= 0
+		|| spt_find_page (spt, pg_round_down(addr))
+	) {
+		/* mmap validity check failed. */
+		f->R.rax = NULL;
+		return;
+	}
+
+	f->R.rax = do_mmap (addr, length, writable, fd_table[fd], offset);
 
 }  
 
