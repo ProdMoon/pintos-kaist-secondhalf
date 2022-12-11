@@ -348,7 +348,9 @@ process_exit (void) {
 	if (curr->pml4 != NULL){
 		printf ("%s: exit(%d)\n", curr->name, curr->exit_code);
 
-		old_level = intr_disable ();
+		/* Cleanup the process here. */
+		process_cleanup ();
+
 		/* 부모에게 자식이(현재 프로세스가) 죽었음을 알게함 */
 		/* sorry mama... */
 		if(curr->sorry_mama != NULL){
@@ -358,6 +360,8 @@ process_exit (void) {
 
 		/* 현재 프로세스의 child_list를 정리함 */
 		/* 얌전히 있으면... 엄마가 금방 돌아올게...! 꼭..! */
+		old_level = intr_disable ();
+
 		struct list *child_list = &curr->child_list;
 		struct list_elem *e = list_head(child_list);
 
@@ -379,7 +383,6 @@ process_exit (void) {
 		}
 		lock_release(&filesys_lock);
 
-		process_cleanup ();
 	}
 }
 

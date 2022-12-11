@@ -320,8 +320,6 @@ void write_syscall_handler (struct intr_frame *f) {
 		written_bytes = size;
 	}
 	else {
-		assert_write_on_unwritable (buffer);
-
 		/* fd validity check */
 		if (fd < 2 || fd >= FD_MAX || fd_table[fd] == NULL) {
 			f->R.rax = -1;
@@ -422,18 +420,23 @@ void mmap_syscall_handler (struct intr_frame *f) {
 
 	/* Check validity for mmap. */
 	if (fd < 2 || fd >= FD_MAX || fd_table[fd] == NULL
-		|| addr == NULL
+		|| addr <= 0
 		|| addr != pg_round_down(addr)
+		|| is_kernel_vaddr (addr)
+		|| is_kernel_vaddr (addr + length + (length % PGSIZE))
+		|| (offset % PGSIZE) != 0
 		|| length <= 0
+		|| length >= 0x8004000000
 		|| file_length (fd_table[fd]) <= 0
-		|| spt_find_page (spt, pg_round_down(addr))
+		|| spt_find_page (spt, addr)
 	) {
 		/* mmap validity check failed. */
 		f->R.rax = NULL;
 		return;
 	}
-
+	lock_acquire (&spt->spt_lock);
 	f->R.rax = do_mmap (addr, length, writable, fd_table[fd], offset);
+	lock_release (&spt->spt_lock);
 
 }  
 
@@ -442,6 +445,39 @@ void mmap_syscall_handler (struct intr_frame *f) {
  * munmap (void *addr)
  */
 void munmap_syscall_handler (struct intr_frame *f) {
+	void *addr = f->R.rdi;
+	struct supplemental_page_table *spt = &thread_current()->spt;
+	struct page *page;
+	int page_cnt;
+
+	/* Check validity for munmap. */
+	if ((page = spt_find_page (spt, addr)) == NULL
+		|| VM_TYPE(page->uninit.type) != VM_FILE
+		|| (page_cnt = page->page_cnt) == 0)
+		return;
+
+	lock_acquire (&spt->spt_lock);
+
+	do_munmap (addr);
+
+	/* Remove from mmap_list. */
+	struct list_elem *e;
+	struct list *list = &spt->mmap_list;
+	for (e = list_begin (list); e != list_end (list); e = list_next (e)) {
+		struct page *p = list_entry (e, struct page, mmap_elem);
+		if (p->va == addr)
+			break;
+	}
+	list_remove (e);
+
+	/* Remove page from SPT. */
+	for (int i=0; i < page_cnt; i++) {
+		page = spt_find_page (spt, addr);
+		spt_remove_page (spt, page);
+		addr += PGSIZE;
+	}
+
+	lock_release (&spt->spt_lock);
 
 }  
 

@@ -58,8 +58,12 @@ anon_swap_out (struct page *page) {
 static void
 anon_destroy (struct page *page) {
 	struct anon_page *anon_page = &page->anon;
+
+	/* Free the struct frame. */
 	free (page->frame);
 	page->frame = NULL;
+
+	/* Free the aux. */
 	free (anon_page->aux);
 	anon_page->aux = NULL;
 }

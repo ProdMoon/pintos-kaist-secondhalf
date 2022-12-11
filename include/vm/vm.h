@@ -55,7 +55,12 @@ struct page {
 
 	/* Your implementation */
 	struct hash_elem hash_elem;
+	struct list_elem mmap_elem;
 	bool writable;
+
+	/* File pages count. (for write-back)
+	   This value valid only for first addr. Others have zero. */
+	int page_cnt;
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -105,6 +110,7 @@ struct page_operations {
 struct supplemental_page_table {
 	struct hash pages;
 	struct lock spt_lock;
+	struct list mmap_list;
 };
 
 #include "threads/thread.h"

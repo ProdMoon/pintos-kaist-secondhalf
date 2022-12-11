@@ -67,6 +67,11 @@ uninit_destroy (struct page *page) {
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
 	ASSERT(page->frame == NULL);
+
+	if (uninit->type == VM_FILE) {
+		struct aux *aux = uninit->aux;
+		file_close (aux->file);
+	}
 	free (uninit->aux);
 	uninit->aux = NULL;
 }

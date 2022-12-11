@@ -51,12 +51,18 @@ file_backed_swap_in (struct page *page, void *kva) {
 	off_t ofs = aux->ofs;
 	size_t page_read_bytes = aux->page_read_bytes;
 	size_t page_zero_bytes = aux->page_zero_bytes;
+	
+	/* Set old dirty bit status. */
+	bool old_dirty = pml4_is_dirty (thread_current()->pml4, page->va);
 
 	/* Load this page. */
 	if (file_read_at (file, page->va, page_read_bytes, ofs) != (int) page_read_bytes)
 		return false;
 
 	memset (page->va + page_read_bytes, 0, page_zero_bytes);
+
+	/* Set dirty bit to old one. */
+	pml4_set_dirty (thread_current()->pml4, page->va, old_dirty);
 
 	return true;
 }
@@ -67,13 +73,19 @@ file_backed_swap_out (struct page *page) {
 	struct file_page *file_page UNUSED = &page->file;
 }
 
-/* Destory the file backed page. PAGE will be freed by the caller. */
+/* Destroy the file backed page. PAGE will be freed by the caller. */
 static void
 file_backed_destroy (struct page *page) {
 	struct file_page *file_page UNUSED = &page->file;
+
+	/* Free the struct frame. */
 	free (page->frame);
 	page->frame = NULL;
-	free (file_page->aux);
+
+	/* Close the file and free the aux. */
+	struct aux *aux = file_page->aux;
+	file_close (aux->file);
+	free (aux);
 	file_page->aux = NULL;
 }
 
@@ -84,6 +96,7 @@ do_mmap (void *addr, size_t length, int writable,
 
 	struct supplemental_page_table *spt = &thread_current()->spt;
 	void *start_addr = addr;
+	int page_cnt = 0;
 
 	/* Set read_bytes and zero_bytes. */
 	uint32_t read_bytes, zero_bytes, readable_bytes;
@@ -96,6 +109,8 @@ do_mmap (void *addr, size_t length, int writable,
 
 	/* Check the addresses to prevent overlap any existing pages. */
 	for (; addr < (start_addr + read_bytes + zero_bytes); addr += PGSIZE) {
+		/* Also, count pages here. */
+		page_cnt += 1;
 		if (spt_find_page (spt, addr))
 			return NULL;
 	}
@@ -106,9 +121,10 @@ do_mmap (void *addr, size_t length, int writable,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		/* Setup auxiliary data. */
+		/* Setup auxiliary data. We will use reopened file
+		   because file may closed or removed by other process.*/
 		struct aux *aux = calloc (1, sizeof(struct aux));
-		aux->file = file;
+		aux->file = file_duplicate (file);
 		aux->ofs = offset;
 		aux->page_read_bytes = page_read_bytes;
 		aux->page_zero_bytes = page_zero_bytes;
@@ -124,10 +140,46 @@ do_mmap (void *addr, size_t length, int writable,
 		addr += PGSIZE;
 		offset += PGSIZE;
 	}
+
+	/* Push the start page into mmap list. */
+	struct page *start_page = spt_find_page (spt, start_addr);
+	start_page->page_cnt = page_cnt;
+	list_push_back (&spt->mmap_list, &start_page->mmap_elem);
+
 	return start_addr;
 }
 
 /* Do the munmap */
 void
 do_munmap (void *addr) {
+	struct supplemental_page_table *spt = &thread_current()->spt;
+	uint64_t *pml4 = thread_current()->pml4;
+	struct page *page;
+	int page_cnt;
+	struct aux *aux;
+	struct file *file;
+	void *start_addr = addr;
+
+	page = spt_find_page (spt, start_addr);
+	page_cnt = page->page_cnt;
+	
+	/* Iterate as page counts. */
+	for (int i=0; i < page_cnt; i++) {
+		page = spt_find_page (spt, addr);
+		aux = page->file.aux;
+		file = aux->file;
+
+		/* Stuff below is only for the initialized pages. */
+		if (page->frame) {
+			/* If the page is dirty, write back to the file. */
+			if (pml4_is_dirty (pml4, addr))
+				file_write_at (file, addr, aux->page_read_bytes, aux->ofs);
+
+			/* Remove page from pml4. */
+			pml4_clear_page (pml4, addr);
+		}
+
+		/* Advance. */
+		addr += PGSIZE;
+	}
 }

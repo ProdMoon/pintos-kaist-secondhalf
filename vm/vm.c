@@ -64,11 +64,12 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 				uninit_new (page, upage, init, type, aux, file_backed_initializer);
 				break;
 			default:
-				printf("vm_alloc_page_with_initializer: 잉? 페이지 타입이 이상해요.\n");
+				printf("vm_alloc_page_with_initializer: Unexpected page type.\n");
 				goto err;
 		}
 
 		page->writable = writable;
+		page->page_cnt = 0;
 
 		/* TODO: Insert the page into the spt. */
 		if (!spt_insert_page (spt, page))
@@ -104,8 +105,10 @@ spt_insert_page (struct supplemental_page_table *spt UNUSED, struct page *page U
 	return hash_insert (&spt->pages, &page->hash_elem) == NULL ? true : false;
 }
 
+/* Remove PAGE from spt. */
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
+	hash_delete (&spt->pages, &page->hash_elem);
 	vm_dealloc_page (page);
 	return true;
 }
@@ -232,6 +235,7 @@ void
 supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
 	hash_init (&spt->pages, page_hash, page_less, NULL);
 	lock_init (&spt->spt_lock);
+	list_init (&spt->mmap_list);
 }
 
 /* Copy supplemental page table from src to dst
@@ -242,6 +246,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 
 	bool success = false;
 
+	/* Duplicate hash table. */
 	struct hash_iterator i;
 	struct hash *h = &src->pages;
 
@@ -265,24 +270,29 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 		/* Duplicate aux. */
 		struct aux *dst_aux = calloc (1, sizeof(struct aux));
 		struct aux *src_aux = srcp->uninit.aux;
-		dst_aux->file = thread_current()->running_executable;
+		dst_aux->file = VM_TYPE(srcp->uninit.type) == VM_FILE ?
+			file_duplicate (src_aux->file) : thread_current()->running_executable;
 		dst_aux->ofs = src_aux->ofs;
 		dst_aux->page_read_bytes = src_aux->page_read_bytes;
 		dst_aux->page_zero_bytes = src_aux->page_zero_bytes;
-
+		
 		/* Make new uninit page.
 		   This will insert new page to dst's SPT automatically. */
 		if (!vm_alloc_page_with_initializer (srcp->uninit.type, srcp->va,
 			srcp->writable, srcp->uninit.init, dst_aux))
 			goto done;
 
+		dstp = spt_find_page(dst, srcp->va);
+
+		/* Copy page_cnt for mmap pages. */
+		dstp->page_cnt = srcp->page_cnt;
+		
 		/* If src page is already initialized, do claim immediately. */
 		switch (VM_TYPE(srcp->operations->type)) {
 			case VM_UNINIT:
 				break;
 			case VM_ANON:
 			case VM_FILE:
-				dstp = spt_find_page(dst, srcp->va);
 				if (vm_do_claim_page (dstp)) {
 					memcpy (dstp->frame->kva, srcp->frame->kva, PGSIZE);
 				} else {
@@ -295,9 +305,27 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 				goto done;
 		}
 	}
+
+	/* Duplicate mmap list. */
+	struct list_elem *e;
+	struct list *src_list = &src->mmap_list;
+	struct list *dst_list = &dst->mmap_list;
+	for (e = list_begin (src_list); e != list_end (src_list); e = list_next (e)) {
+		struct page *srcp = list_entry (e, struct page, mmap_elem);
+		struct page *dstp = spt_find_page (dst, srcp->va);
+		ASSERT (srcp->page_cnt != 0);
+		list_push_back(dst_list, &dstp->mmap_elem);
+	}
+
 	success = true;
 done:
 	return success;
+}
+
+void
+hash_destroy_helper (struct hash_elem *e, void *aux) {
+	struct page *p = hash_entry (e, struct page, hash_elem);
+	spt_remove_page (&thread_current()->spt, p);
 }
 
 /* Free the resource hold by the supplemental page table */
@@ -305,15 +333,19 @@ void
 supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread and
 	 * TODO: writeback all the modified contents to the storage. */
-	struct hash_iterator i;
+
+	/* Unmap file pages. Writeback will also operated here. */
+	struct list *mmap_list = &spt->mmap_list;
+	while ( ! list_empty (mmap_list)) {
+		struct page *page = list_entry (list_pop_front (mmap_list), struct page, mmap_elem);
+		ASSERT (page->page_cnt != 0);
+		do_munmap (page->va);
+	}
+
+	/* Destroy and re-init hash table. */
 	struct hash *h = &spt->pages;
 
-	hash_first (&i, h);
-	while (hash_next (&i)) {
-		struct page *p = hash_entry (hash_cur (&i), struct page, hash_elem);
-		destroy (p);
-	}
-	hash_destroy (h, NULL);
+	hash_destroy (h, hash_destroy_helper);
 	hash_init (h, page_hash, page_less, NULL);
 }
 
