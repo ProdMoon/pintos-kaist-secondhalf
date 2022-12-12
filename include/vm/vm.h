@@ -5,6 +5,7 @@
 #include <hash.h>
 #include "threads/mmu.h"
 #include "threads/synch.h"
+#include "devices/disk.h"
 
 enum vm_type {
 	/* page not initialized */
@@ -37,6 +38,10 @@ enum vm_type {
 struct page_operations;
 struct thread;
 
+/* Locks for global. */
+struct lock swap_lock;
+struct lock frame_lock;
+
 /* For TYPE check. */
 #define VM_TYPE(type) ((type) & 7)
 #define VM_IS_STACK(type) ((type) & VM_MARKER_0)
@@ -58,6 +63,9 @@ struct page {
 	struct list_elem mmap_elem;
 	bool writable;
 
+	/* Sector number for swap. The initial value is -1. */
+	int sec_no;
+
 	/* File pages count. (for write-back)
 	   This value valid only for first addr. Others have zero. */
 	int page_cnt;
@@ -78,6 +86,7 @@ struct page {
 struct frame {
 	void *kva;
 	struct page *page;
+	struct list_elem elem;
 };
 
 /* Struct for auxiliary data. */
@@ -86,6 +95,12 @@ struct aux {
     off_t ofs;
     size_t page_read_bytes;
     size_t page_zero_bytes;
+};
+
+/* Struct for swap table. */
+struct swap {
+	disk_sector_t sec_no;
+	struct list_elem elem;
 };
 
 /* The function table for page operations.
@@ -109,7 +124,12 @@ struct page_operations {
  * All designs up to you for this. */
 struct supplemental_page_table {
 	struct hash pages;
-	struct lock spt_lock;
+	struct list *frames;
+
+	struct list *swap_free;
+	struct list *swap_used;
+	struct disk *swap_disk;
+
 	struct list mmap_list;
 };
 
