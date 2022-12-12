@@ -266,6 +266,86 @@ supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
 	list_init (&spt->mmap_list);
 }
 
+/* Copy the swap and return the sec_no of copied. */
+disk_sector_t
+swap_copy (struct page *srcp) {
+	struct disk *swap_disk = thread_current()->spt.swap_disk;
+	struct list *swap_free = thread_current()->spt.swap_free;
+	struct list *swap_used = thread_current()->spt.swap_used;
+
+	lock_acquire (&swap_lock);
+
+	/* Find the swap from used list. */
+	struct list_elem *e;
+	struct swap *src_swap;
+	for (e = list_begin (swap_used); e != list_end (swap_used); e = list_next (e)) {
+		src_swap = list_entry (e, struct swap, elem);
+		if (src_swap->sec_no == srcp->sec_no)
+			break;
+	}
+	ASSERT (e != list_end (swap_used));
+
+	/* Get a free swap and push into used list. */
+	struct swap *dst_swap = list_entry (list_pop_front (swap_free), struct swap, elem);
+	list_push_front (swap_used, &dst_swap->elem);
+
+	lock_release (&swap_lock);
+
+	/* Make a new copy.
+	   Iterate for 8 times (PGSIZE / DISK_SECTOR_SIZE). */
+	char buf[DISK_SECTOR_SIZE];
+	disk_sector_t dst_no = dst_swap->sec_no;
+	disk_sector_t src_no = src_swap->sec_no;
+
+	for (int i = 0; i < 8; i++) {
+		disk_read (swap_disk, src_no, buf);
+		disk_write (swap_disk, dst_no, buf);
+
+		/* Advance. */
+		dst_no++;
+		src_no++;
+	}
+
+	return dst_no - 8;
+}
+
+/* Read from the src swap and write into dstp. */
+void
+swap_read_and_paste (struct page *dstp, struct page *srcp) {
+	struct disk *swap_disk = thread_current()->spt.swap_disk;
+	struct list *swap_free = thread_current()->spt.swap_free;
+	struct list *swap_used = thread_current()->spt.swap_used;
+
+	lock_acquire (&swap_lock);
+
+	/* Find the swap from used list. */
+	struct list_elem *e;
+	struct swap *src_swap;
+	for (e = list_begin (swap_used); e != list_end (swap_used); e = list_next (e)) {
+		src_swap = list_entry (e, struct swap, elem);
+		if (src_swap->sec_no == srcp->sec_no)
+			break;
+	}
+	ASSERT (e != list_end (swap_used));
+
+	lock_release (&swap_lock);
+
+	/* Read from swap and paste into dstp address.
+	   Iterate for 8 times (PGSIZE / DISK_SECTOR_SIZE). */
+	char buf[DISK_SECTOR_SIZE];
+	void *addr = dstp->va;
+	disk_sector_t src_no = src_swap->sec_no;
+
+	while (addr < dstp->va + PGSIZE) {
+		disk_read (swap_disk, src_no, buf);
+		memcpy (addr, buf, DISK_SECTOR_SIZE);
+
+		/* Advance. */
+		src_no++;
+		addr += DISK_SECTOR_SIZE;
+	}
+}
+
 /* Copy supplemental page table from src to dst
    THIS function is called in CHILD process's context. */
 bool
@@ -294,17 +374,17 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 			if (vm_alloc_page (srcp->uninit.type, srcp->va, srcp->writable)) {
 				dstp = spt_find_page(dst, srcp->va);
 
-				/* If stack is in swap, make the artificial page fault.
-				   So stack data could get back into frame. */
+				/* If stack is in swap, read it from the swap. */
 				if (srcp->sec_no > -1) {
-					char buf;
-					memcpy (buf, srcp->va, 1);
+					swap_read_and_paste (dstp, srcp);
 				}
-				memcpy (dstp->frame->kva, srcp->frame->kva, PGSIZE);
-				ASSERT (srcp->sec_no == -1);
-				dstp->sec_no = -1;
-
-			} else {
+				else {
+					memcpy (dstp->frame->kva, srcp->frame->kva, PGSIZE);
+					ASSERT (srcp->sec_no == -1);
+					dstp->sec_no = -1;
+				}
+			}
+			else {
 				printf("supplemental_page_table_copy: stack의 alloc 실패.\n");
 				goto done;
 			}
@@ -328,9 +408,14 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 
 		dstp = spt_find_page(dst, srcp->va);
 
-		/* Copy stuff for mmap pages and swap pages. */
+		/* Copy stuff for mmap pages. */
 		dstp->page_cnt = srcp->page_cnt;
-		dstp->sec_no = srcp->sec_no;
+
+		/* If page is in swap, duplicate it and continue. */
+		if (srcp->sec_no > -1) {
+			dstp->sec_no = swap_copy (srcp);
+			continue;
+		}
 		
 		/* If src page is already initialized, do claim immediately. */
 		switch (VM_TYPE(srcp->operations->type)) {
