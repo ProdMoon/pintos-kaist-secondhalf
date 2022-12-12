@@ -17,7 +17,10 @@ vm_init (void) {
 #endif
 	register_inspect_intr ();
 	/* DO NOT MODIFY UPPER LINES. */
-	/* TODO: Your code goes here. */
+
+	/* Init locks for global. */
+	lock_init (&swap_lock);
+	lock_init (&frame_lock);
 }
 
 /* Get the type of the page. This function is useful if you want to know the
@@ -70,7 +73,7 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		/* Set some initial stuff. */
 		page->writable = writable;
 		page->page_cnt = 0;
-		page->is_swap = 0;
+		page->sec_no = -1;
 
 		/* Insert the page into the spt. */
 		if (!spt_insert_page (spt, page))
@@ -117,8 +120,11 @@ spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 /* Get the struct frame, that will be evicted. */
 static struct frame *
 vm_get_victim (void) {
-	struct frame *victim = list_entry (list_pop_front (thread_current()->spt.frames),
-									struct frame, elem);
+	lock_acquire (&frame_lock);
+	struct list_elem *e = list_pop_front (thread_current()->spt.frames);
+	lock_release (&frame_lock);
+
+	struct frame *victim = list_entry (e, struct frame, elem);
 
 	return victim;
 }
@@ -157,7 +163,9 @@ vm_get_frame (void) {
 	}
 
 	/* Push back to frame table. */
+	lock_acquire (&frame_lock);
 	list_push_back (thread_current()->spt.frames, &frame->elem);
+	lock_release (&frame_lock);
 	
 	ASSERT (frame != NULL);
 	ASSERT (frame->page == NULL);
@@ -198,8 +206,9 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		/* Check that the page is evicted stack. */
 		if (page = spt_find_page (spt, pg_round_down(addr)))
 			vm_do_claim_page (page);
-
-		vm_stack_growth (addr);
+		else
+			vm_stack_growth (addr);
+			
 		return true;
 	}
 
@@ -207,6 +216,10 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 	void *va = pg_round_down(addr);
 	if ((page = spt_find_page (spt, va)) == NULL)
 		return false;	/* Real Page Fault */
+
+	/* Check that user tries to write on the unwritable. (i.e. code segment) */
+	if (user && write && !(page->writable))
+		return false;
 
 	return vm_do_claim_page (page);
 }
@@ -222,7 +235,6 @@ vm_dealloc_page (struct page *page) {
 /* Claim the page that allocate on VA. */
 bool
 vm_claim_page (void *va UNUSED) {
-	/* TODO: Fill this function */
 	struct page *page = calloc (1, sizeof(struct page));
 	page->va = va;
 
@@ -252,7 +264,6 @@ void
 supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
 	hash_init (&spt->pages, page_hash, page_less, NULL);
 	list_init (&spt->mmap_list);
-	lock_init (&spt->spt_lock);
 }
 
 /* Copy supplemental page table from src to dst
@@ -282,7 +293,17 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 		if (VM_IS_STACK(srcp->uninit.type)) {
 			if (vm_alloc_page (srcp->uninit.type, srcp->va, srcp->writable)) {
 				dstp = spt_find_page(dst, srcp->va);
+
+				/* If stack is in swap, make the artificial page fault.
+				   So stack data could get back into frame. */
+				if (srcp->sec_no > -1) {
+					char buf;
+					memcpy (buf, srcp->va, 1);
+				}
 				memcpy (dstp->frame->kva, srcp->frame->kva, PGSIZE);
+				ASSERT (srcp->sec_no == -1);
+				dstp->sec_no = -1;
+
 			} else {
 				printf("supplemental_page_table_copy: stack의 alloc 실패.\n");
 				goto done;
@@ -309,7 +330,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 
 		/* Copy stuff for mmap pages and swap pages. */
 		dstp->page_cnt = srcp->page_cnt;
-		dstp->is_swap = srcp->is_swap;
+		dstp->sec_no = srcp->sec_no;
 		
 		/* If src page is already initialized, do claim immediately. */
 		switch (VM_TYPE(srcp->operations->type)) {

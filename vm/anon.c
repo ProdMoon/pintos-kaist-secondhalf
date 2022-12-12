@@ -32,7 +32,7 @@ vm_anon_init (void) {
 	list_init (spt->swap_free);
 	list_init (spt->swap_used);
 
-	/* TODO: Set up the swap_disk. */
+	/* Set up the swap_disk. */
 	swap_disk = disk_get (1, 1);
 	spt->swap_disk = swap_disk;
 
@@ -41,7 +41,6 @@ vm_anon_init (void) {
 	while (available_pages > 0) {
 		struct swap *swap = calloc (1, sizeof(struct swap));
 		swap->sec_no = sec_no;
-		swap->va = NULL;
 		list_push_back (spt->swap_free, &swap->elem);
 
 		/* Advance. */
@@ -75,21 +74,24 @@ anon_swap_in (struct page *page, void *kva) {
 	struct list *swap_free = thread_current()->spt.swap_free;
 	struct list *swap_used = thread_current()->spt.swap_used;
 
-	/* Set page's "is_swap" marker to false. */
-	page->is_swap = false;
-
 	/* Find the swap from used list and push into free list. */
 	struct list_elem *e;
 	struct swap *swap;
+	lock_acquire (&swap_lock);
+
 	for (e = list_begin (swap_used); e != list_end (swap_used); e = list_next (e)) {
 		swap = list_entry (e, struct swap, elem);
-		if (swap->va == page->va)
+		if (swap->sec_no == page->sec_no)
 			break;
 	}
-	ASSERT (swap->va != NULL);
-	swap->va = NULL;
+	ASSERT (e != list_end (swap_used));
 	list_remove (e);
 	list_push_front (swap_free, &swap->elem);
+
+	lock_release (&swap_lock);
+
+	/* Unlink page from swap. */
+	page->sec_no = -1;
 
 	/* Copy from disk to va.
 	   Iterate for 8 times (PGSIZE / DISK_SECTOR_SIZE). */
@@ -117,14 +119,14 @@ anon_swap_out (struct page *page) {
 	struct list *swap_free = thread_current()->spt.swap_free;
 	struct list *swap_used = thread_current()->spt.swap_used;
 
-	/* Set page's "is_swap" marker to true. */
-	page->is_swap = true;
-
 	/* Get a free swap and push into used list. */
+	lock_acquire (&swap_lock);
 	struct swap *swap = list_entry (list_pop_front (swap_free), struct swap, elem);
-	ASSERT (swap->va == NULL);
-	swap->va = page->va;
 	list_push_front (swap_used, &swap->elem);
+	lock_release (&swap_lock);
+
+	/* Make a link for identification. */
+	page->sec_no = swap->sec_no;
 
 	/* Copy and write each sector from va to disk.
 	   Iterate for 8 times (PGSIZE / DISK_SECTOR_SIZE). */
@@ -149,21 +151,25 @@ static void
 anon_destroy (struct page *page) {
 	struct anon_page *anon_page = &page->anon;
 
-	if (page->is_swap) {
+	if (page->sec_no > -1) {
 		/* Remove page from swap disk. */
 		struct disk *swap_disk = thread_current()->spt.swap_disk;
 		struct list *swap_free = thread_current()->spt.swap_free;
 		struct list *swap_used = thread_current()->spt.swap_used;
 		struct list_elem *e;
 		struct swap *swap;
+		
+		lock_acquire (&swap_lock);
 		for (e = list_begin (swap_used); e != list_end (swap_used); e = list_next (e)) {
 			swap = list_entry (e, struct swap, elem);
-			if (swap->va == page->va)
+			if (swap->sec_no == page->sec_no)
 				break;
 		}
-		swap->va = NULL;
 		list_remove (e);
 		list_push_front (swap_free, &swap->elem);
+		lock_release (&swap_lock);
+		
+		page->sec_no = -1;
 	}
 	else {
 		/* Remove the frame from the frame list. */
@@ -171,12 +177,14 @@ anon_destroy (struct page *page) {
 		struct list *frames = thread_current()->spt.frames;
 		struct frame *f;
 
+		lock_acquire (&frame_lock);
 		for (e = list_begin (frames); e != list_end (frames); e = list_next (e)) {
 			f = list_entry (e, struct frame, elem);
-			if (f->page->va == page->va)
+			if (f->kva == page->frame->kva)
 				break;
 		}
 		list_remove (e);
+		lock_release (&frame_lock);
 
 		/* Free the struct frame. */
 		ASSERT (page->frame->kva == f->kva);

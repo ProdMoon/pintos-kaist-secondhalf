@@ -234,13 +234,8 @@ __do_fork (void **aux) {
 
 #ifdef VM
 	supplemental_page_table_init (&current->spt);
-
-	lock_acquire (&thread_current()->spt.spt_lock);
-	if (!supplemental_page_table_copy (&current->spt, &parent->spt)) {
-		lock_release (&thread_current()->spt.spt_lock);
+	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
 		goto error;
-	}
-	lock_release (&thread_current()->spt.spt_lock);
 #else
 	if (!pml4_for_each (parent->pml4, duplicate_pte, parent))
 		goto error;
@@ -405,9 +400,7 @@ process_cleanup (void) {
 	lock_release(&filesys_lock);
 
 #ifdef VM
-	lock_acquire (&thread_current()->spt.spt_lock);
 	supplemental_page_table_kill (&curr->spt);
-	lock_release (&thread_current()->spt.spt_lock);
 #endif
 
 	uint64_t *pml4;
@@ -876,13 +869,9 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		aux->page_read_bytes = page_read_bytes;
 		aux->page_zero_bytes = page_zero_bytes;
 
-		lock_acquire (&thread_current()->spt.spt_lock);
 		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux)) {
-			lock_release (&thread_current()->spt.spt_lock);
+					writable, lazy_load_segment, aux))
 			return false;
-		}
-		lock_release (&thread_current()->spt.spt_lock);
 
 		/* Advance. */
 		read_bytes -= page_read_bytes;

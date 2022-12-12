@@ -1,6 +1,7 @@
 /* file.c: Implementation of memory backed file object (mmaped object). */
 
 #include "vm/vm.h"
+#include "userprog/syscall.h"
 
 static bool file_backed_swap_in (struct page *page, void *kva);
 static bool file_backed_swap_out (struct page *page);
@@ -43,8 +44,6 @@ file_backed_swap_in (struct page *page, void *kva) {
 	struct file_page *file_page UNUSED = &page->file;
 	struct supplemental_page_table *spt = &thread_current()->spt;
 
-	/* TODO: For swap-in case. (Must not enter in first page fault case) */
-
 	/* Load aux data. */
 	struct aux *aux = file_page->aux;
 	struct file *file = aux->file;
@@ -56,8 +55,12 @@ file_backed_swap_in (struct page *page, void *kva) {
 	bool old_dirty = pml4_is_dirty (thread_current()->pml4, page->va);
 
 	/* Load this page. */
-	if (file_read_at (file, page->va, page_read_bytes, ofs) != (int) page_read_bytes)
+	lock_acquire (&filesys_lock);
+	if (file_read_at (file, page->va, page_read_bytes, ofs) != (int) page_read_bytes) {
+		lock_release (&filesys_lock);
 		return false;
+	}
+	lock_release (&filesys_lock);
 
 	memset (page->va + page_read_bytes, 0, page_zero_bytes);
 
@@ -71,6 +74,20 @@ file_backed_swap_in (struct page *page, void *kva) {
 static bool
 file_backed_swap_out (struct page *page) {
 	struct file_page *file_page UNUSED = &page->file;
+
+	/* If dirty, write down to file. */
+	if (pml4_is_dirty (thread_current()->pml4, page->va)) {
+		struct aux *aux = page->file.aux;
+		struct file *file = aux->file;
+		lock_acquire (&filesys_lock);
+		file_write_at (file, page->va, aux->page_read_bytes, aux->ofs);
+		lock_release (&filesys_lock);
+
+		/* Turn off the dirty bit. */
+		pml4_set_dirty (thread_current()->pml4, page->va, false);
+	}
+
+	return true;
 }
 
 /* Destroy the file backed page. PAGE will be freed by the caller. */
@@ -78,9 +95,26 @@ static void
 file_backed_destroy (struct page *page) {
 	struct file_page *file_page UNUSED = &page->file;
 
-	/* Free the struct frame. */
-	free (page->frame);
-	page->frame = NULL;
+	if (page->frame) {
+		/* Remove the frame from the frame list. */
+		struct list_elem *e;
+		struct list *frames = thread_current()->spt.frames;
+		struct frame *f;
+
+		lock_acquire (&frame_lock);
+		for (e = list_begin (frames); e != list_end (frames); e = list_next (e)) {
+			f = list_entry (e, struct frame, elem);
+			if (f->kva == page->frame->kva)
+				break;
+		}
+		list_remove (e);
+		lock_release (&frame_lock);
+		
+		/* Free the struct frame. */
+		ASSERT (page->frame->kva == f->kva);
+		free (page->frame);
+		page->frame = NULL;
+	}
 
 	/* Close the file and free the aux. */
 	struct aux *aux = file_page->aux;
@@ -172,8 +206,11 @@ do_munmap (void *addr) {
 		/* Stuff below is only for the initialized pages. */
 		if (page->frame) {
 			/* If the page is dirty, write back to the file. */
-			if (pml4_is_dirty (pml4, addr))
+			if (pml4_is_dirty (pml4, addr)) {
+				lock_acquire (&filesys_lock);
 				file_write_at (file, addr, aux->page_read_bytes, aux->ofs);
+				lock_release (&filesys_lock);
+			}
 
 			/* Remove page from pml4. */
 			pml4_clear_page (pml4, addr);

@@ -434,10 +434,8 @@ void mmap_syscall_handler (struct intr_frame *f) {
 		f->R.rax = NULL;
 		return;
 	}
-	lock_acquire (&spt->spt_lock);
-	f->R.rax = do_mmap (addr, length, writable, fd_table[fd], offset);
-	lock_release (&spt->spt_lock);
 
+	f->R.rax = do_mmap (addr, length, writable, fd_table[fd], offset);
 }  
 
 /* 
@@ -455,8 +453,6 @@ void munmap_syscall_handler (struct intr_frame *f) {
 		|| VM_TYPE(page->uninit.type) != VM_FILE
 		|| (page_cnt = page->page_cnt) == 0)
 		return;
-
-	lock_acquire (&spt->spt_lock);
 
 	do_munmap (addr);
 
@@ -476,8 +472,6 @@ void munmap_syscall_handler (struct intr_frame *f) {
 		spt_remove_page (spt, page);
 		addr += PGSIZE;
 	}
-
-	lock_release (&spt->spt_lock);
 
 }  
 

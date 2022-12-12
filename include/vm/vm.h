@@ -38,6 +38,10 @@ enum vm_type {
 struct page_operations;
 struct thread;
 
+/* Locks for global. */
+struct lock swap_lock;
+struct lock frame_lock;
+
 /* For TYPE check. */
 #define VM_TYPE(type) ((type) & 7)
 #define VM_IS_STACK(type) ((type) & VM_MARKER_0)
@@ -58,7 +62,9 @@ struct page {
 	struct hash_elem hash_elem;
 	struct list_elem mmap_elem;
 	bool writable;
-	bool is_swap;
+
+	/* Sector number for swap. The initial value is -1. */
+	int sec_no;
 
 	/* File pages count. (for write-back)
 	   This value valid only for first addr. Others have zero. */
@@ -94,7 +100,6 @@ struct aux {
 /* Struct for swap table. */
 struct swap {
 	disk_sector_t sec_no;
-	void *va;
 	struct list_elem elem;
 };
 
@@ -126,8 +131,6 @@ struct supplemental_page_table {
 	struct disk *swap_disk;
 
 	struct list mmap_list;
-
-	struct lock spt_lock;
 };
 
 #include "threads/thread.h"
