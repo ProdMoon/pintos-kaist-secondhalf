@@ -52,9 +52,8 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 
 	/* Check whether the upage is already occupied or not. */
 	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: Create the page, fetch the initializer according to the VM type,
-		 * TODO: and then create "uninit" page struct by calling uninit_new. You
-		 * TODO: should modify the field after calling the uninit_new. */
+		/* Create the page, fetch the initializer according to the VM type,
+		   and then create "uninit" page struct by calling uninit_new. */
 		struct page *page = calloc (1, sizeof(struct page));
 		switch (VM_TYPE(type)) {
 			case VM_ANON:
@@ -68,10 +67,12 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 				goto err;
 		}
 
+		/* Set some initial stuff. */
 		page->writable = writable;
 		page->page_cnt = 0;
+		page->is_swap = 0;
 
-		/* TODO: Insert the page into the spt. */
+		/* Insert the page into the spt. */
 		if (!spt_insert_page (spt, page))
 			goto err;
 
@@ -116,8 +117,8 @@ spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 /* Get the struct frame, that will be evicted. */
 static struct frame *
 vm_get_victim (void) {
-	struct frame *victim = NULL;
-	 /* TODO: The policy for eviction is up to you. */
+	struct frame *victim = list_entry (list_pop_front (thread_current()->spt.frames),
+									struct frame, elem);
 
 	return victim;
 }
@@ -126,10 +127,18 @@ vm_get_victim (void) {
  * Return NULL on error.*/
 static struct frame *
 vm_evict_frame (void) {
-	struct frame *victim UNUSED = vm_get_victim ();
-	/* TODO: swap out the victim and return the evicted frame. */
+	/* Swap out the victim and return the evicted frame. */
+	struct frame *victim = vm_get_victim ();
+	swap_out (victim->page);
 
-	return NULL;
+	/* Clear page from pml4. */
+	pml4_clear_page (thread_current()->pml4, victim->page->va);
+	
+	/* Unlink. */
+	victim->page->frame = NULL;
+	victim->page = NULL;
+
+	return victim;
 }
 
 /* palloc() and get frame. If there is no available page, evict the page
@@ -138,14 +147,17 @@ vm_evict_frame (void) {
  * space.*/
 static struct frame *
 vm_get_frame (void) {
-	/* TODO: Fill this function. */
 	struct frame *frame = calloc (1, sizeof(struct frame));
 
 	if ((frame->kva = palloc_get_page (PAL_USER | PAL_ZERO)) == NULL) {
-		// PANIC ("TODO : if user pool memory is full, need to evict the frame.");
-		thread_current()->exit_code = -1;
-		thread_exit();
+		/* No available page. Evict the page and get frame. */
+		free (frame);
+		if ((frame = vm_evict_frame ()) == NULL)
+			PANIC ("BOTH MEMORY AND SWAP ARE FULL.");
 	}
+
+	/* Push back to frame table. */
+	list_push_back (thread_current()->spt.frames, &frame->elem);
 	
 	ASSERT (frame != NULL);
 	ASSERT (frame->page == NULL);
@@ -182,6 +194,11 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 	void *rsp = f->rsp;
 	if (rsp-8 == addr ||
 		((rsp <= addr) && (VM_STACKSIZE_LIMIT <= addr) && (addr < USER_STACK))) {
+		
+		/* Check that the page is evicted stack. */
+		if (page = spt_find_page (spt, pg_round_down(addr)))
+			vm_do_claim_page (page);
+
 		vm_stack_growth (addr);
 		return true;
 	}
@@ -224,7 +241,7 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 
-	/* TODO: Insert page table entry to map page's VA to frame's PA. */
+	/* Insert page table entry to map page's VA to frame's PA. */
 	pml4_set_page (thread_current()->pml4, page->va, frame->kva, page->writable);
 
 	return swap_in (page, frame->kva);
@@ -234,8 +251,8 @@ vm_do_claim_page (struct page *page) {
 void
 supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
 	hash_init (&spt->pages, page_hash, page_less, NULL);
-	lock_init (&spt->spt_lock);
 	list_init (&spt->mmap_list);
+	lock_init (&spt->spt_lock);
 }
 
 /* Copy supplemental page table from src to dst
@@ -245,6 +262,12 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 		struct supplemental_page_table *src UNUSED) {
 
 	bool success = false;
+
+	/* Copy globals. */
+	dst->frames = src->frames;
+	dst->swap_free = src->swap_free;
+	dst->swap_used = src->swap_used;
+	dst->swap_disk = src->swap_disk;
 
 	/* Duplicate hash table. */
 	struct hash_iterator i;
@@ -284,8 +307,9 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 
 		dstp = spt_find_page(dst, srcp->va);
 
-		/* Copy page_cnt for mmap pages. */
+		/* Copy stuff for mmap pages and swap pages. */
 		dstp->page_cnt = srcp->page_cnt;
+		dstp->is_swap = srcp->is_swap;
 		
 		/* If src page is already initialized, do claim immediately. */
 		switch (VM_TYPE(srcp->operations->type)) {
@@ -325,7 +349,7 @@ done:
 void
 hash_destroy_helper (struct hash_elem *e, void *aux) {
 	struct page *p = hash_entry (e, struct page, hash_elem);
-	spt_remove_page (&thread_current()->spt, p);
+	vm_dealloc_page (p);
 }
 
 /* Free the resource hold by the supplemental page table */

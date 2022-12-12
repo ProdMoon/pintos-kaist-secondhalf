@@ -104,6 +104,13 @@ initd (void **args) {
 	struct thread *main_thread = args[1];
 	struct semaphore *first_userprog_started = args[2];
 
+#ifdef VM
+	/* Get address of initial frame table, swap table and swap disk. */
+	current->spt.frames = main_thread->spt.frames;
+	current->spt.swap_free = main_thread->spt.swap_free;
+	current->spt.swap_used = main_thread->spt.swap_used;
+	current->spt.swap_disk = main_thread->spt.swap_disk;
+#endif
 	/* main_thread does not call process_init().
 	 * Therefore, explicitly initialize child_list */
 	list_init(&main_thread->child_list);
