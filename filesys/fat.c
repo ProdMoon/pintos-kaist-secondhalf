@@ -18,7 +18,7 @@ struct fat_boot {
 
 /* FAT FS */
 struct fat_fs {
-	struct fat_boot bs;
+	struct fat_boot bs;			// Boot sector (read from disk's FAT_BOOT_SECTOR)
 	unsigned int *fat;
 	unsigned int fat_length;
 	disk_sector_t data_start;
@@ -152,7 +152,10 @@ fat_boot_create (void) {
 
 void
 fat_fs_init (void) {
-	/* TODO: Your code goes here. */
+	fat_fs->fat_length = (fat_fs->bs.total_sectors - 1 - fat_fs->bs.fat_sectors) / SECTORS_PER_CLUSTER;
+	fat_fs->data_start = fat_fs->bs.fat_start + fat_fs->bs.fat_sectors;
+	fat_fs->last_clst = fat_fs->fat_length;
+	lock_init (&fat_fs->write_lock);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -164,30 +167,89 @@ fat_fs_init (void) {
  * Returns 0 if fails to allocate a new cluster. */
 cluster_t
 fat_create_chain (cluster_t clst) {
-	/* TODO: Your code goes here. */
+	if (clst > fat_fs->last_clst)
+		goto err;
+
+	/* FAT에서 할당 가능한 (0인) entry를 찾습니다. */
+	for (unsigned i = 2; i <= fat_fs->last_clst; i++) {
+		if (fat_get(i) == 0) {
+			/* clst가 0이 아닐 경우, 기존 체인이 새로운 클러스터를 가리키도록 해 줍니다. */
+			if (clst != 0) {
+				ASSERT(fat_get(clst) == EOChain);
+				fat_put (clst, i);
+			}
+			fat_put (i, EOChain);
+			return i;
+		}
+	}
+err:
+	return 0;
 }
 
 /* Remove the chain of clusters starting from CLST.
  * If PCLST is 0, assume CLST as the start of the chain. */
 void
 fat_remove_chain (cluster_t clst, cluster_t pclst) {
-	/* TODO: Your code goes here. */
+	cluster_t next;
+	if (pclst != 0)
+		fat_put(pclst, EOChain);
+	while (fat_get(clst) != EOChain) {
+		next = fat_get(clst);
+		fat_put(clst, 0);
+		clst = next;
+	}
+	fat_put(clst, 0);
 }
 
 /* Update a value in the FAT table. */
 void
 fat_put (cluster_t clst, cluster_t val) {
-	/* TODO: Your code goes here. */
+	fat_fs->fat[clst] = val;
 }
 
 /* Fetch a value in the FAT table. */
 cluster_t
 fat_get (cluster_t clst) {
-	/* TODO: Your code goes here. */
+	return fat_fs->fat[clst];
 }
 
 /* Covert a cluster # to a sector number. */
 disk_sector_t
 cluster_to_sector (cluster_t clst) {
-	/* TODO: Your code goes here. */
+	return clst + fat_fs->data_start;
+}
+
+/* clst로부터 offset만큼 이동한 곳의 cluster number를 return합니다. */
+cluster_t
+fat_seek (cluster_t clst, unsigned offset) {
+	while (offset > 0) {
+		if (fat_get(clst) == EOChain)
+			break;
+		clst = fat_get(clst);
+		offset--;
+	}
+	return clst;
+}
+
+/* n개의 클러스터를 할당합니다. 성공하면 1, 실패하면 0을 return합니다. */
+bool
+fat_alloc_clusters (size_t n, cluster_t *clstp) {
+	bool success = false;
+	if (n < 1)
+		goto done;
+	
+	cluster_t clst = fat_create_chain (0);
+	if (clst) {
+		cluster_t c = clst;
+		for (unsigned i = 1; i < n; i++) {
+			if (!(c = fat_create_chain (c))) {
+				fat_remove_chain (clst, 0);
+				goto done;
+			}
+		}
+		*clstp = clst;
+		success = true;
+	}
+done:
+	return success;
 }
